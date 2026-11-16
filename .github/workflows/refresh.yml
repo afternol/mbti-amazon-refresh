@@ -3,33 +3,46 @@ name: refresh-amazon-images
 on:
   schedule:
     - cron: "0 */12 * * *"      # 12時間ごと（UTC 0時/12時 = JST 9時/21時）。遅延しても24h以内に収まる
+  push:
+    paths: ["asins.json"]       # 記事追加で ASIN が増えたら即更新
   workflow_dispatch:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install requests
-      - name: Refresh and upload
+      - name: Fetch image URLs from Creators API
         env:
           AMAZON_CREATORS_CLIENT_ID: ${{ secrets.AMAZON_CREATORS_CLIENT_ID }}
           AMAZON_CREATORS_CLIENT_SECRET: ${{ secrets.AMAZON_CREATORS_CLIENT_SECRET }}
           AMAZON_CREATORS_VERSION: ${{ secrets.AMAZON_CREATORS_VERSION }}
           AMAZON_PARTNER_TAG: ${{ secrets.AMAZON_PARTNER_TAG }}
-          FTP_HOST: ${{ secrets.FTP_HOST }}
-          FTP_USER: ${{ secrets.FTP_USER }}
-          FTP_PASS: ${{ secrets.FTP_PASS }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
         run: python refresh.py
-      # 60日間リポジトリに動きがないと定期実行が自動停止されるため、月1回だけ実行記録をコミットして防ぐ
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+      - id: deploy
+        uses: actions/deploy-pages@v4
+      # 60日間リポジトリに動きがないと定期実行が自動停止されるため、毎月1日に実行記録をコミットして防ぐ
       - name: Keepalive
         if: github.event_name == 'schedule'
         run: |

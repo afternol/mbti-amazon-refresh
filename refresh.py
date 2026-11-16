@@ -1,16 +1,14 @@
 """MBTIキャリア: Amazon商品画像データの定期更新（GitHub Actions から12時間ごとに実行）
 
 asins.json の全ASINについて Creators API の GetItems で画像URL・商品ページURLを取得し、
-amazon_products.json を作って Xserver（/mbti/data/）に FTPS でアップロードする。
+public/amazon_products.json を書き出す（ワークフローが GitHub Pages に公開する）。
+サイト側の assets/amz.js が https://afternol.github.io/mbti-amazon-refresh/amazon_products.json を読む。
 
 - 価格は取得・表示しない（画像のみ）
 - 規約: 画像は保存せずURL参照のみ。URLは24時間以内に再取得（amz.js は24hを超えたデータを使わない）
 必要な環境変数（GitHub Secrets）:
   AMAZON_CREATORS_CLIENT_ID / AMAZON_CREATORS_CLIENT_SECRET / AMAZON_CREATORS_VERSION / AMAZON_PARTNER_TAG
-  FTP_HOST / FTP_USER / FTP_PASS / FTP_REMOTE_DIR
 """
-import ftplib
-import io
 import json
 import os
 import sys
@@ -25,6 +23,7 @@ TOKEN_URL = {"3.1": "https://api.amazon.com/auth/o2/token",
              "3.3": "https://api.amazon.co.jp/auth/o2/token"}
 API = "https://creatorsapi.amazon/catalog/v1/getItems"
 MARKET = "www.amazon.co.jp"
+HERE = Path(__file__).parent
 
 
 def token(ver):
@@ -61,44 +60,23 @@ def fetch(asins):
     return items, errors
 
 
-def upload(data: bytes):
-    ftp = ftplib.FTP_TLS(os.environ["FTP_HOST"], timeout=60)
-    ftp.login(os.environ["FTP_USER"], os.environ["FTP_PASS"])
-    ftp.prot_p()
-    base = os.environ["FTP_REMOTE_DIR"].rstrip("/")
-    try:
-        ftp.mkd(f"{base}/data")
-    except ftplib.error_perm:
-        pass
-    ftp.storbinary(f"STOR {base}/data/amazon_products.json.tmp", io.BytesIO(data))
-    try:   # 途中状態を見せないため、一時ファイルに書いてから置き換える
-        ftp.rename(f"{base}/data/amazon_products.json.tmp", f"{base}/data/amazon_products.json")
-    except ftplib.error_perm:
-        try:
-            ftp.delete(f"{base}/data/amazon_products.json")
-        except ftplib.error_perm:
-            pass
-        ftp.rename(f"{base}/data/amazon_products.json.tmp", f"{base}/data/amazon_products.json")
-    ftp.quit()
-
-
 def main():
-    asins = json.loads(Path(__file__).with_name("asins.json").read_text(encoding="utf-8"))
+    asins = json.loads((HERE / "asins.json").read_text(encoding="utf-8"))
     items, errors = fetch(asins)
     print(f"asins {len(asins)} / fetched {len(items)} / errors {len(errors)}")
     for e in errors:
         print("  ", e)
     if not items:
         sys.exit("no items fetched")
-    data = json.dumps({"fetched_at": datetime.now(timezone.utc).isoformat(), "items": items},
-                      ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    if "--dry-run" in sys.argv:
-        print(data[:300])
-        return
-    upload(data)
-    print("uploaded", len(data), "bytes")
+    out = HERE / "public"
+    out.mkdir(exist_ok=True)
+    (out / "amazon_products.json").write_text(json.dumps(
+        {"fetched_at": datetime.now(timezone.utc).isoformat(), "items": items},
+        ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    (out / "index.html").write_text("<!doctype html><meta charset=utf-8><title>data</title>", encoding="utf-8")
+    print("written", out / "amazon_products.json")
     if len(items) < len(asins) * 0.9:
-        sys.exit(f"取得率が低い: {len(items)}/{len(asins)}")   # 通知のため失敗扱い（アップロード自体は済）
+        print(f"::warning::取得率が低い: {len(items)}/{len(asins)}")
 
 
 if __name__ == "__main__":
